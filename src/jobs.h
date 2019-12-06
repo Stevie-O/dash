@@ -63,7 +63,8 @@ struct procstat {
 
 struct job {
 	struct procstat ps0;	/* status of process */
-	struct procstat *ps;	/* status or processes when more than one */
+	struct procstat *ps;	/* status of processes when more than one */
+	struct procstat *pstat; /* status of process used for $? and set -e */
 #if JOBS
 	int stopstatus;		/* status of a stopped job */
 #endif
@@ -79,7 +80,8 @@ struct job {
 #endif
 		waited: 1,	/* true if this entry has been waited for */
 		used: 1,	/* true if this entry is in used */
-		changed: 1;	/* true if status has changed */
+		changed: 1,	/* true if status has changed */
+		pipefail: 1;	/* true if pipefail option applies */
 	struct job *prev_job;	/* previous job */
 };
 

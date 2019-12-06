@@ -118,6 +118,7 @@ STATIC void cmdlist(union node *, int);
 STATIC void cmdputs(const char *);
 STATIC void showpipe(struct job *, struct output *);
 STATIC int getstatus(struct job *);
+STATIC void checkpipefail(struct job *, struct procstat *);
 
 #if JOBS
 static int restartjob(struct job *, int);
@@ -775,7 +776,8 @@ makejob(union node *node, int nprocs)
 	jp->prev_job = curjob;
 	curjob = jp;
 	jp->used = 1;
-	jp->ps = &jp->ps0;
+	jp->pstat = jp->ps = &jp->ps0;
+	jp->pipefail = o_pipefail;
 	if (nprocs > 1) {
 		jp->ps = ckmalloc(nprocs * sizeof (struct procstat));
 	}
@@ -920,6 +922,7 @@ forkparent(struct job *jp, union node *n, int mode, pid_t pid)
 	}
 	if (jp) {
 		struct procstat *ps = &jp->ps[jp->nprocs++];
+		jp->pstat = ps;
 		ps->pid = pid;
 		ps->status = -1;
 		ps->cmd = nullstr;
@@ -1041,6 +1044,7 @@ dowait(int block, struct job *job)
 			if (sp->pid == pid) {
 				TRACE(("Job %d: changing status of proc %d from 0x%x to 0x%x\n", jobno(jp), pid, sp->status, status));
 				sp->status = status;
+				if (jp->pipefail) checkpipefail(jp, sp);
 				thisjob = jp;
 			}
 			if (sp->status == -1)
@@ -1492,7 +1496,7 @@ getstatus(struct job *job) {
 	int status;
 	int retval;
 
-	status = job->ps[job->nprocs - 1].status;
+	status = job->pstat->status;
 	retval = WEXITSTATUS(status);
 	if (!WIFEXITED(status)) {
 #if JOBS
@@ -1512,4 +1516,36 @@ getstatus(struct job *job) {
 	TRACE(("getstatus: job %d, nproc %d, status %x, retval %x\n",
 		jobno(job), job->nprocs, status, retval));
 	return retval;
+}
+
+STATIC void
+checkpipefail(struct job *job, struct procstat *ps) {
+
+	/* if there is only one process in this job (i.e. no pipe),
+	 * then this is a no-op.
+	 * if the job didn't fail, this is a no-op.
+	 */
+	if (ps->status == 0 || job->nprocs == 1)
+		return;
+
+	/* Initially, job->pstat points to the last leg of the pipeline;
+	 * when pipefail isn't enabled, that's the one that drives $?.
+	 *
+	 * Therefore, at this point, one of the following must be true:
+	 * (1) job->pstat is still pointed to the end of the pipe,
+	 *     and that subprocess has not exited yet (status == -1)
+	 * (2) job->pstat is still pointed to the end of the pipe,
+	 *     and that subprocess exited already with status 0
+	 * (3) job->pstat is pointed to another slot that exited
+	 *     with nonzero status
+	 *
+	 * For case(3), we only want to take precedence if we are further
+	 * right in the pipeline.
+	 */
+
+	if (ps > job->pstat || job->pstat->status == 0 || job->pstat->status == -1) {
+		TRACE(("Job %d: proc %d now used for pipe exit status\n", jobno(job), ps->pid));
+		job->pstat = ps;
+	}
+
 }
